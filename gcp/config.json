@@ -1,0 +1,11 @@
+{
+    "project_id": "",
+    "location": "",
+    "zone": "",
+    "bucket_name": "",
+    "node_lru_cache_size": 8,
+    "node_internal_ips": {
+        "node-name": "node-ip",
+        "localhost": "127.0.0.1"
+    }
+}
