@@ -44,3 +44,6 @@ The size and number of data blocks could be set by adjusting parameters in the c
 2. The data size, number and balancing parameters could be adjust in the above controlling scripts.
 3. The query workload could be adjust in `dataset.py`.
 4. Hardware-related configurations (i.e. CPU capacity, network bandwidth) could be adjust in `controller.py` and `entities.py`.
+
+## Theoretical Analysis
+We include the full theoretical analysis and proof as appendix in the `HotHashVLDB25.pdf`.
