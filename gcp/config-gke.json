@@ -1,0 +1,31 @@
+{
+    "project_id": "dbgroup",
+    "location": "ASIA-EAST2",
+    "zone": "asia-east2-a",
+    "bucket_name": "hothash-0",
+    "node_lru_cache_size": 8,
+    "node_internal_ips": {
+        "hothash-node-01": "10.79.5.2",
+        "hothash-node-02": "10.79.6.5",
+        "hothash-node-03": "10.79.1.3",
+        "hothash-node-04": "10.79.0.25",
+        "hothash-node-05": "10.79.6.4",
+        "hothash-node-06": "10.79.4.7",
+        "hothash-node-07": "10.79.7.3",
+        "hothash-node-08": "10.79.3.8",
+        "hothash-node-09": "10.79.1.4",
+        "hothash-node-10": "10.79.3.4",
+        "hothash-node-11": "10.79.6.3",
+        "hothash-node-12": "10.79.4.6",
+        "hothash-node-13": "10.79.0.26",
+        "hothash-node-14": "10.79.4.5",
+        "hothash-node-15": "10.79.1.5",
+        "hothash-node-16": "10.79.3.5",
+        "hothash-node-17": "10.79.7.4",
+        "hothash-node-18": "10.79.0.27",
+        "hothash-node-19": "10.79.5.4",
+        "hothash-node-20": "10.79.5.5",
+        "hothash-node-21": "10.170.0.53",
+        "localhost": "127.0.0.1"
+    }
+}

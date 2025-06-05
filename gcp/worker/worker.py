@@ -73,7 +73,7 @@ def query():
     data_id = str(request.args.get('data_id'))
     query_id = str(request.args.get('query_id'))
     start_time = time.time()
-
+    
     for _ in range(TIMEOUT):
         try:
             with lock:
@@ -97,7 +97,7 @@ def query():
             fetch_time = time.time()
             result = 0
     end_time = time.time()
-    return jsonify({"result": result, 'tot_server_time': end_time-start_time, 'fetch_time' : fetch_time-start_time, 'compute_time': end_time-fetch_time, 'data_id': data_id, 'node_id': node_id, 'query_id': query_id, 'query_op': op})
+    return jsonify({"result": result, 'tot_server_time': end_time-start_time, 'fetch_time' : fetch_time-start_time, 'compute_time': end_time-fetch_time, 'data_id': data_id, 'node_id': node_id, 'query_id': query_id})
 
 @app.route('/clear_cache')
 def clear_cache():

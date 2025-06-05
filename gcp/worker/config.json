@@ -26,6 +26,6 @@
         "hothash-node-19": "10.170.0.56",
         "hothash-node-20": "10.170.0.52",
         "hothash-node-21": "10.170.0.53",
-        "localhost": "127.0.0.1"
+        "localhost": "0.0.0.0"
     }
 }

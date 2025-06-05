@@ -1,4 +1,3 @@
-import sys
 import time
 import json
 import bisect
@@ -6,9 +5,9 @@ import hashlib
 import requests
 import threading
 import concurrent.futures
-from math import ceil, sqrt
+from math import ceil, floor, sqrt
 from collections import defaultdict
-from pyheaven import TQDM, LoadJson
+from pyheaven import TQDM
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -17,26 +16,22 @@ def Hash(key, salt=None):
     return int(hashlib.md5((f"{key}" if salt is None else f"{key}|{salt}").encode('utf-8')).hexdigest(), 16)
 
 class Cluster:
-    def __init__(self, N=20, hash_policy='hot', capacity=-1, hot_alpha=1.0, num_data=15, random=1, dyn_op=False, debug=False):
+    def __init__(self, N=20, hash_policy='hot', capacity=-1, hot_alpha=1.0, debug=False):
         self.config = json.load(open('config.json'))
         self.hash_policy = hash_policy
         self.capacity = capacity
         self.alpha = hot_alpha
         self.debug = debug
-        self.dyn_op = dyn_op
-        self.init(N, num_data, random)
+        self.init(N)
 
     def get_node_api(self, n):
         node_internal_ip = self.config['node_internal_ips'][f'hothash-node-{n+1:02d}']; return f"http://{node_internal_ip}:8080"
 
     def query_node(self, n, data_id, op='mix', qid=''):
         try:
-            if self.dyn_op:
-                self.node_loads[n] += (self.dyn_stats[data_id] / self.dyn_bound[data_id])
-            else:
-                self.node_loads[n] += 1
+            self.node_loads[n] += 1
             if self.debug:
-                return {"result": 0, 'tot_server_time': 0, 'fetch_time' : 0, 'compute_time': 0, 'data_id': 0, 'node_id': 0, 'query_id': 0, 'query_op': None}
+                return {"result": 0, 'tot_server_time': 0, 'fetch_time' : 0, 'compute_time': 0, 'data_id': 0, 'node_id': 0, 'query_id': 0}
             return requests.get(self.get_node_api(n)+'/query', params={'op': op, 'data_id': data_id, 'query_id': qid}).json()
         except Exception as e:
             print(n, data_id, e); return None
@@ -58,13 +53,7 @@ class Cluster:
         except Exception as e:
             print(n, e); return None
 
-    def node_churn(self, n, status="DISABLE"):
-        if status == "DISABLE":
-            self.disabled.add(n)
-        elif status == "ENABLE":
-            self.disabled.discard(n)
-
-    def init(self, N, num_data, random):
+    def init(self, N):
         self.N = N
         self.cost = {
             'num_queries': 0,
@@ -77,52 +66,6 @@ class Cluster:
         for n in range(N):
             self.clear_node(n)
 
-        # node churn
-        self.disabled = set()
-
-        # virtual ring randomness
-        self.vring_cost = {
-            'size': 0,
-            'time': 0
-        }
-        init_start = time.time()
-        self.vring_map = dict()
-        data_ids = [f"D{i:03d}" for i in range(num_data)]
-        while len(data_ids) > 0:
-            temp = list()
-            for _ in range(random):
-                if len(data_ids) != 0:
-                    idx = np.random.randint(0, len(data_ids))
-                    temp.append(data_ids[idx])
-                    data_ids.pop(idx)
-            for key in temp:
-                self.vring_map[key] = temp[0]
-        self.vring_cost['size'] += self.total_size(self.vring_map)
-        self.vring_cost['time'] += (time.time() - init_start)
-
-        # dynamic query operation
-        self.dyn_op_cost = {
-            'size': 0,
-            'time': 0
-        }
-        init_start = time.time()
-        if self.dyn_op:
-            log_path = f"./profile_DYNOP_D{num_data}_hot.json"
-            query_log = LoadJson(log_path)[1]
-            self.dyn_stats = defaultdict(int)
-            self.dyn_bound = defaultdict(int)
-            for _, value in query_log.items():
-                self.dyn_stats[value["data_id"]] += value["compute_time"]
-                self.dyn_bound[value["data_id"]] += 1
-            self.dyn_cost = {
-                "num_queries": sum(value for _, value in self.dyn_stats.items()),
-                "cache_hit": 0,
-                "replica": 0,
-            }
-            self.dyn_op_cost['size'] += self.total_size(self.dyn_stats)
-            self.dyn_op_cost['size'] += self.total_size(self.dyn_cost)
-        self.dyn_op_cost['time'] += (time.time() - init_start)
-
     def get_node_load(self, n):
         return self.node_loads[n]
         # return self.get_node_info(n)['num_queries']
@@ -131,17 +74,6 @@ class Cluster:
         if salt in self.hash_rings: return self.hash_rings[salt]
         self.hash_rings[salt] = sorted([(Hash(i, salt), i) for i in range(self.N)])
         return self.hash_rings[salt]
-
-    # node churn
-    def get_hash_node_churn(self, key, salt=None):
-        hash_ring = self._get_hash_ring(salt); hash_key = Hash(key, salt)
-        idx = bisect.bisect_right(hash_ring, x=(hash_key,-1)) % self.N; node = hash_ring[idx][1]
-        while node in self.disabled:
-            if salt is None:
-                node = (node+1)%self.N
-            else:
-                idx = (idx+1)%self.N; node = hash_ring[idx][1]
-        return node
 
     # Bounded Load
     def get_hash_node(self, key, salt=None):
@@ -152,12 +84,6 @@ class Cluster:
         n = self.get_hash_node(key); yield n
         while True:
             n = (n+1)%self.N; yield n
-        # n = self.get_hash_node_churn(key); yield n
-        # while True:
-        #     n = (n+1)%self.N
-        #     if n in self.disabled:
-        #         continue
-        #     yield n
 
     def query_boundedhash(self, key, op='mix', qid=''):
         self.stats[key] += 1; self.cost['num_queries'] += 1
@@ -187,77 +113,33 @@ class Cluster:
     def get_hothash_node_legacy(self, key, qid=''):
         hash_ring = self._get_hash_ring(salt=key); hash_key = Hash(qid, salt=key)
         frequency = self.stats[key]/self.cost['num_queries'] if key in self.stats else 0.
-        if self.dyn_op:
-            frequency = self.dyn_stats[key]/self.dyn_cost['num_queries']
         num_nodes = min(max(int(ceil((frequency**self.alpha)*self.N)), 1), self.N)
-        nodes_set = set([n for _,n in self._get_hash_ring(salt=("arc",key))[:num_nodes]])
+        nodes_set = set([n for h,n in self._get_hash_ring(salt=("arc",key))[:num_nodes]])
         hash_arc = [(h,n) for h,n in hash_ring if n in nodes_set]
         return hash_arc[bisect.bisect_right(hash_arc, x=(hash_key,-1)) % num_nodes][1]
 
-    def get_hothash_node(self, key, qid=''):
-        # hash_ring = self._get_hash_ring(salt=key); hash_key = Hash(qid, salt=key)
-        frequency = self.stats[key]/self.cost['num_queries'] if key in self.stats else 0.
-        if self.dyn_op:
-            frequency = self.dyn_stats[key]/self.dyn_cost['num_queries']
+    def get_hothash_node(self, key, qid='', history=None):
+        hash_ring = self._get_hash_ring(salt=key); hash_key = Hash(qid, salt=key)
+        # if history is None:
+        #     frequency = self.stats[key]/self.cost['num_queries'] if key in self.stats else 0.
+        # else:
+        frequency = history[key] if key in history else 0.
         num_nodes = min(max(int(ceil((frequency**self.alpha)*self.N)), 1), self.N)
-        nodes_set = set([n for _,n in self._get_hash_ring(salt=("arc",key))[:num_nodes]])
+        nodes_set = set([n for h,n in self._get_hash_ring(salt=("arc",key))[:num_nodes]])
         return min(nodes_set, key=lambda n:self.get_node_load(n))
         # hash_arc = [(h,n) for h,n in hash_ring if n in nodes_set]
         # return hash_arc[bisect.bisect_right(hash_arc, x=(hash_key,-1)) % num_nodes][1]
 
-    def get_hothash_node_churn(self, key, qid=''):
-        # hash_ring = self._get_hash_ring(salt=key); hash_key = Hash(qid, salt=key)
-        frequency = self.stats[key]/self.cost['num_queries'] if key in self.stats else 0.
-        if self.dyn_op:
-            frequency = self.dyn_stats[key]/self.dyn_cost['num_queries']
-        num_nodes = min(max(int(ceil((frequency**self.alpha)*(self.N-len(self.disabled)))), 1), (self.N-len(self.disabled)))
-        nodes_set = set([n for _,n in self._get_hash_ring(salt=("arc",key))[:num_nodes]])
-        for i, node in enumerate(self.disabled):
-            if node in nodes_set:
-                nodes_set.remove(node)
-                nodes_set.add(self._get_hash_ring(salt=("arc",key))[num_nodes+i][1])
-        return min(nodes_set, key=lambda n:self.get_node_load(n))
-        # hash_arc = [(h,n) for h,n in hash_ring if n in nodes_set]
-        # return hash_arc[bisect.bisect_right(hash_arc, x=(hash_key,-1)) % num_nodes][1]
-
-    def get_hothash_node_vring(self, key, qid=''):
-        # hash_ring = self._get_hash_ring(salt=key); hash_key = Hash(qid, salt=key)
-        frequency = self.stats[key]/self.cost['num_queries'] if key in self.stats else 0.
-        if self.dyn_op:
-            frequency = self.dyn_stats[key]/self.dyn_cost['num_queries']
-        num_nodes = min(max(int(ceil((frequency**self.alpha)*self.N)), 1), self.N)
-        nodes_set = set([n for _,n in self._get_hash_ring(salt=("arc",self.vring_map[key]))[:num_nodes]])
-        return min(nodes_set, key=lambda n:self.get_node_load(n))
-        # hash_arc = [(h,n) for h,n in hash_ring if n in nodes_set]
-        # return hash_arc[bisect.bisect_right(hash_arc, x=(hash_key,-1)) % num_nodes][1]
-
-    def query_hothash(self, key, op='mix', qid=''):
-        query_start = time.time()
+    def query_hothash(self, key, op='mix', qid='', history=None):
         self.stats[key] += 1; self.cost['num_queries'] += 1
-        n = self.get_hothash_node(key, qid=qid)
-        self.vring_cost['time'] += (time.time() - query_start)
+        n = self.get_hothash_node(key, qid=qid, history=history)
         return self.query_node(n, key, op=op, qid=qid)
 
-    # SPORE
-    def query_sporehash(self, key, op='mix', qid='', hotkeys=[], spore_rf=1):
-        self.stats[key] += 1; self.cost['num_queries'] += 1
-        nodes_set = list(); counter = 0
-        for n in self.get_balancedhash_node_list(key):
-            nodes_set.append(n); counter += 1
-            if key in hotkeys and counter<spore_rf+1:
-                continue
-            else:
-                break
-        n = np.random.choice(nodes_set)
-        return self.query_node(n, key, op=op, qid=qid)
-
-    def query(self, key, op='mix', qid='', hotkeys=[], spore_rf=1):
+    def query(self, key, op='mix', qid='', history=None):
         if self.hash_policy == 'hot':
-            return self.query_hothash(key, op=op, qid=qid)
+            return self.query_hothash(key, op=op, qid=qid, history=history)
         elif self.hash_policy == 'balanced':
             return self.query_balancedhash(key, op=op, qid=qid)
-        elif self.hash_policy == 'spore':
-            return self.query_sporehash(key, op=op, qid=qid, hotkeys=hotkeys, spore_rf=spore_rf)
         else:
             return self.query_boundedhash(key, op=op, qid=qid)
 
@@ -285,16 +167,7 @@ class Cluster:
         max_load, min_load, avg_load = max(loads), min(loads), sum(loads)/self.N
         sigma = sqrt(sum([(l-avg_load)**2 for l in loads])/self.N)
         imbalance = sigma*self.N/self.cost['num_queries'] if self.cost['num_queries']>0 else 0.
-        if self.dyn_op:
-            loads = [value for _, value in self.node_loads.items()]
-            max_load, min_load, avg_load = max(loads), min(loads), sum(loads)/self.N
-            sigma = sqrt(sum([(l-avg_load)**2 for l in loads])/self.N)
-            imbalance = sigma*self.N/self.dyn_cost['num_queries']
         replicas = [info['num_replicas'] for info in infos]
-        self.vring_cost['size'] += self.total_size(self.hash_rings)
-        self.dyn_op_cost['size'] += self.total_size(self.stats)
-        self.dyn_op_cost['size'] += self.total_size(self.cost)
-        self.dyn_op_cost['size'] += self.total_size(self.node_loads)
         return {
             'num_nodes': self.N,
             'hash_policy': self.hash_policy,
@@ -306,16 +179,12 @@ class Cluster:
             'min_load': min_load,
             'avg_load': avg_load,
             'loads': dict(self.node_loads),
-            'node_infos': infos,
-            'vring_size': self.vring_cost['size'],
-            'vring_time': self.vring_cost['time'],
-            'dyn_op_size': self.dyn_op_cost['size'],
-            'dyn_op_time': self.dyn_op_cost['time'],
+            'node_infos': infos
         }
 
 import sys
 import numpy as np
-from pyheaven import HeavenArguments, IntArgumentDescriptor, FloatArgumentDescriptor, LiteralArgumentDescriptor, SwitchArgumentDescriptor, BoolArgumentDescriptor, PrintJson
+from pyheaven import HeavenArguments, IntArgumentDescriptor, FloatArgumentDescriptor, LiteralArgumentDescriptor, SwitchArgumentDescriptor, PrintJson
 
 def get_lodate(num_data, B=7):
     bucket_size = num_data // B
@@ -332,7 +201,7 @@ def generate_workload(
     num_data = 100,
     skewness = 1.01,
     seed = 42,
-    dyn_op = False,
+    hotness_change = 0,
 ):
     np.random.seed(seed)
     data = list()
@@ -340,6 +209,7 @@ def generate_workload(
     lodate = get_lodate(num_data, B=7)
     N = num_queries_per_time_step * num_time_steps
     time_steps = [0 for _ in range(num_time_steps)]
+    pivots = [int(i*num_time_steps/(hotness_change+1)) for i in range(hotness_change+2)][1:-1]
     for t in range(N):
         time_steps[np.random.randint(num_time_steps)] += 1
     for t in range(num_time_steps):
@@ -348,7 +218,9 @@ def generate_workload(
         if mode == 'uniform':
             data_ids = np.random.choice(num_data, num_queries, replace=True)
         elif mode == "ycsb":
-            data_ids = [Hash(x)%num_data for x in np.random.zipf(skewness, num_queries)]
+            # data_ids = [Hash(x)%num_data for x in np.random.zipf(skewness, num_queries)]
+            idx = bisect.bisect_right(pivots, t)
+            data_ids = [Hash(x+idx)%num_data for x in np.random.zipf(skewness, num_queries)]
         elif mode == "ssb":
             bucket_ids = [Hash(x)%7 for x in np.random.zipf(skewness, num_queries)]
             all_data_ids = [np.random.choice(lodate[bucket_id]) for bucket_id in bucket_ids for _ in range(max(ceil(0.2 * len(lodate[bucket_id])), 1))]
@@ -356,26 +228,12 @@ def generate_workload(
         for i in range(num_queries):
             data_time_step.append((f"Q{query_id:06d}", f"D{data_ids[i]:03d}", 'mix')); query_id += 1
         data.append(data_time_step)
-
-    # dynamic query operation
-    if dyn_op:
-        ops = ['sum', 'mean', 'min', 'max']
-        keys = [f"D{d:03d}" for d in range(num_data)]
-        key2op = dict()
-        for key in keys:
-            key2op[key] = np.random.choice(ops)
-        for i in range(len(data)):
-            for j in range(len(data[i])):
-                data[i][j] = (data[i][j][0], data[i][j][1], key2op[data[i][j][1]])
-
     return data
 
 def execute_workload(
     cluster, workload,
     time_step_duration_secs = 10.0,
-    spore_replication_factor = 1,
-    spore_threshold = 1,
-    node_churn = 0,
+    window_size = 0,
 ):
     tot_start_time = time.time()
     results = dict()
@@ -396,19 +254,18 @@ def execute_workload(
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for t, queries in enumerate(TQDM(workload)):
-            # if t == 19:
-            #     for n in range(node_churn):
-            #         cluster.node_churn(n, "DISABLE")
-            stat = defaultdict(int)
-            for _, d, _ in queries:
-                if cluster.dyn_op:
-                    stat[d] += (cluster.dyn_stats[d] / cluster.dyn_bound[d])
-                else:
-                    stat[d] += 1
-            hotkeys = sorted(stat, key=stat.get, reverse=True)[:spore_threshold]
+            cnt = 0
+            frequency = defaultdict(int)
+            for query in workload[t%5]:
+                cnt += 1
+                frequency[query[1]] += 1
+                if cnt >= 50:
+                    break
+            for key in frequency:
+                frequency[key] /= cnt
             for q, d, o in queries:
                 local_times[q] = time.time()
-                future = executor.submit(query_wrapper, {'qid': q, 'key': d, 'op': o, 'hotkeys': hotkeys, 'spore_rf': spore_replication_factor})
+                future = executor.submit(query_wrapper, {'qid': q, 'key': d, 'op': o, 'history': frequency})
                 futures.append((q, future))
             time.sleep(time_step_duration_secs)
 
@@ -437,16 +294,12 @@ if __name__=="__main__":
         IntArgumentDescriptor    ('s', default=       42, help='Random seed'),
 
         FloatArgumentDescriptor  ('t', default=  30.0, help='Duration of each time step in seconds'),
-        LiteralArgumentDescriptor('H', default= 'hot', choices=['hot', 'balanced', 'bounded', 'cons', 'spore'], help='Hash policy'),
+        LiteralArgumentDescriptor('H', default= 'hot', choices=['hot', 'balanced', 'bounded', 'cons'], help='Hash policy'),
         FloatArgumentDescriptor  ('a', default=  1.00, help='Hot alpha'),
         FloatArgumentDescriptor  ('e', default= 0.300, help='Balanced epsilon'),
-        IntArgumentDescriptor    ('g', default=     1, help='SPORE replication factor'),
-        IntArgumentDescriptor    ('r', default=     1, help='SPORE threshold'),
 
-        IntArgumentDescriptor    ('C', default=     0, help='Number of node churns'),
-        IntArgumentDescriptor    ('R', default=     1, help='Virtual ring randomness control'),
-
-        BoolArgumentDescriptor   ('O', default= False, help='Dynamic query operation'),
+        IntArgumentDescriptor    ('X', default=     0, help='Number of hotness change'),
+        IntArgumentDescriptor    ('W', default=     0, help='Number of time steps for sliding window'),
 
         SwitchArgumentDescriptor ('d', help='debug mode'),
     ])
@@ -457,7 +310,7 @@ if __name__=="__main__":
         num_data = args.D,
         skewness = args.k,
         seed = args.s,
-        dyn_op = args.O,
+        hotness_change = args.X,
     )
     m = sum(len(queries) for queries in workload)
     C = max(int(ceil(m/args.N*(1+args.e))),1)
@@ -468,21 +321,13 @@ if __name__=="__main__":
             'hot': -1,
             'balanced': C,
             'bounded': C,
-            'cons': -1,
-            'spore': -1
+            'cons': -1
         }[args.H],
         hot_alpha = args.a,
-        num_data = args.D,
-        random = args.R,
-        dyn_op = args.O,
         debug = args.d,
     )
-    if args.O and (args.H == 'bounded' or args.H == 'balanced'):
-        cluster.capacity = max(int(ceil(cluster.dyn_cost['num_queries']/args.N*(1+args.e))),1)
     profile = execute_workload(cluster, workload,
         time_step_duration_secs = args.t,
-        spore_replication_factor = args.g,
-        spore_threshold = args.r,
-        node_churn = args.C,
+        window_size = args.W,
     )
     PrintJson(profile)
