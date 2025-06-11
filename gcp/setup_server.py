@@ -27,47 +27,69 @@ hosts = [f"hothash-node-{i:02d}" for i in range(1, 21)]
 zone = "asia-east2-a"
 coordinator = "hothash-node-21"
 
+
 def setup_server(host):
-    CMD(f"source config.bash && gcloud compute scp --zone {zone} ./config.bash {host}:~/config.bash")
-    CMD(f"source config.bash && gcloud compute scp --zone {zone} ./config.json {host}:~/config.json")
-    CMD(f"source config.bash && gcloud compute scp --zone {zone} ./04-server.py {host}:~/server.py")
+    CMD(f"gcloud compute scp --zone {zone} ./config.bash jiayuan@{host}:~/config.bash"
+        )
+    CMD(f"gcloud compute scp --zone {zone} ./config.json jiayuan@{host}:~/config.json"
+        )
+    CMD(f"gcloud compute scp --zone {zone} ./server.py jiayuan@{host}:~/server.py"
+        )
     CMD(f"echo '{{\"node_id\": \"{host}\"}}' > node_id_{host}.json")
-    CMD(f"source config.bash && gcloud compute scp --zone {zone} ./node_id_{host}.json {host}:~/node_id.json")
-    CMD(f"source config.bash && gcloud compute ssh {host} --zone {zone} --command 'python3 server.py > server.log' &")
-def stop_server(host):
-    CMD(f"source config.bash && gcloud compute instances stop {host} --zone {zone}")
-def start_server(host):
-    CMD(f"source config.bash && gcloud compute instances start {host} --zone {zone}")
+    CMD(f"gcloud compute scp --zone {zone} ./node_id_{host}.json jiayuan@{host}:~/node_id.json"
+        )
+    CMD(f"gcloud compute ssh jiayuan@{host} --zone {zone} --command 'python3 server.py > server.log' &"
+        )
+
+
+# def stop_server(host):
+#     CMD(f"gcloud compute instances stop {host} --zone {zone}")
+
+# def start_server(host):
+#     CMD(f"gcloud compute instances start {host} --zone {zone}")
+
+# threads = []
+# for host in hosts:
+#     threads.append(threading.Thread(target=stop_server, args=(host, )))
+#     threads[-1].start()
+# threads.append(threading.Thread(target=stop_server, args=(coordinator, )))
+# threads[-1].start()
+# for t in threads:
+#     t.join()
+
+# time.sleep(5)
+
+# threads = []
+# for host in hosts:
+#     threads.append(threading.Thread(target=start_server, args=(host, )))
+#     threads[-1].start()
+# threads.append(threading.Thread(target=start_server, args=(coordinator, )))
+# threads[-1].start()
+# for t in threads:
+#     t.join()
+
+# time.sleep(5)
 
 threads = []
 for host in hosts:
-    threads.append(threading.Thread(target=stop_server, args=(host,))); threads[-1].start()
-threads.append(threading.Thread(target=stop_server, args=(coordinator,))); threads[-1].start()
-for t in threads:
-    t.join()
+    threads.append(threading.Thread(target=setup_server, args=(host, )))
+    threads[-1].start()
 
-time.sleep(120)
-
-threads = []
-for host in hosts:
-    threads.append(threading.Thread(target=start_server, args=(host,))); threads[-1].start()
-threads.append(threading.Thread(target=start_server, args=(coordinator,))); threads[-1].start()
-for t in threads:
-    t.join()
-
-time.sleep(90)
-
-threads = []
-for host in hosts:
-    threads.append(threading.Thread(target=setup_server, args=(host,))); threads[-1].start()
-CMD(f"source config.bash && gcloud compute scp --zone {zone} ./config.bash {coordinator}:~/config.bash")
-CMD(f"source config.bash && gcloud compute scp --zone {zone} ./config.json {coordinator}:~/config.json")
-CMD(f"source config.bash && gcloud compute scp --zone {zone} ./exp.py {coordinator}:~/exp.py")
-CMD(f"source config.bash && gcloud compute scp --zone {zone} ./dyn_exp.py {coordinator}:~/dyn_exp.py")
-CMD(f"source config.bash && gcloud compute scp --zone {zone} ./slide_exp.py {coordinator}:~/slide_exp.py")
-CMD(f"source config.bash && gcloud compute scp --zone {zone} ./fix_exp.py {coordinator}:~/fix_exp.py")
+CMD(f"gcloud compute scp --zone {zone} ./config.bash jiayuan@{coordinator}:~/config.bash"
+    )
+CMD(f"gcloud compute scp --zone {zone} ./config.json jiayuan@{coordinator}:~/config.json"
+    )
+CMD(f"gcloud compute scp --zone {zone} ./exp.py jiayuan@{coordinator}:~/exp.py"
+    )
+CMD(f"gcloud compute scp --zone {zone} ./dyn_exp.py jiayuan@{coordinator}:~/dyn_exp.py"
+    )
+CMD(f"gcloud compute scp --zone {zone} ./slide_exp.py jiayuan@{coordinator}:~/slide_exp.py"
+    )
+CMD(f"gcloud compute scp --zone {zone} ./fix_exp.py jiayuan@{coordinator}:~/fix_exp.py"
+    )
+CMD(f"gcloud compute scp --zone {zone} ./rl.py jiayuan@{coordinator}:~/rl.py")
 for t in threads:
     t.join()
 print("Done.")
 
-time.sleep(90)
+time.sleep(5)

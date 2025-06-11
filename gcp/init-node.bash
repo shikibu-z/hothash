@@ -3,7 +3,7 @@ hosts=(hothash-node-01 hothash-node-02 hothash-node-03 hothash-node-04 hothash-n
 for host in "${hosts[@]}"
 do
     echo "Initializing $host..."
-    gcloud compute ssh $host --zone $zone --command "
+    gcloud compute ssh jiayuan@$host --zone $zone --command "
         sudo apt-get update
         sudo apt-get install python3 python3-pip -y
         python3 -m pip install -U flask
@@ -20,4 +20,8 @@ gcloud compute ssh $coordinator --zone $zone --command "
     python3 -m pip install -U numpy
     python3 -m pip install -U pyheaven
     python3 -m pip install -U tqdm
+    python3 -m pip install -U torch
+    python3 -m pip install -U matplotlib
+    python3 -m pip install -U openai
+    
 "
