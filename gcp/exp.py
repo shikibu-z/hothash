@@ -41,7 +41,7 @@ class Cluster:
         self.alpha = hot_alpha
         self.debug = debug
         self.dyn_op = dyn_op
-        self.rl_agent = None  # RL agent for dynamic scheduling
+        self.rl_agent: RLQueryScheduler = None  # RL agent for dynamic scheduling
         self.load_history = deque(maxlen=100000)
         self.locality_history = deque(maxlen=100000)
         self.init(N, num_data, random)
@@ -319,12 +319,11 @@ class Cluster:
     def query_rl(self, key, op='mix', qid=''):
         self.stats[key] += 1
         self.cost['num_queries'] += 1
-
         query = Query(qid, [key], op)
         state = self.get_state(query)
         valid_actions = self.get_valid_actions(query)
         n = self.rl_agent.schedule_query(state, valid_actions)
-        print(n)
+        # print(n)
         result = self.query_node(n, key, op=op, qid=qid)
 
         # Calculate locality score. 0 for cache miss and 1 for cache hit
@@ -392,6 +391,8 @@ class Cluster:
 
         for i in range(self.num_nodes):
             valid_actions.append(i)
+
+        return valid_actions
 
     def get_state(self, query: Query) -> np.ndarray:
         """Get current environment state for RL agent"""
