@@ -80,6 +80,7 @@ def query():
     query_id = str(request.args.get('query_id'))
     start_time = time.time()
     cache_miss = 1
+    cache_replacement = 0
 
     for _ in range(TIMEOUT):
         try:
@@ -95,6 +96,7 @@ def query():
                     if K > 0 and len(CACHE) >= K:
                         print(node_id, "pop")
                         CACHE.popitem(last=False)
+                        cache_replacement = 1
                     CACHE[data_id] = data
                     CACHE.move_to_end(data_id)
             fetch_time = time.time()
@@ -114,7 +116,8 @@ def query():
         'node_id': node_id,
         'query_id': query_id,
         'query_op': op,
-        'cache_miss': cache_miss
+        'cache_miss': cache_miss,
+        'cache_replacement': cache_replacement
     })
 
 

@@ -42,8 +42,6 @@ class Cluster:
         self.debug = debug
         self.dyn_op = dyn_op
         self.rl_agent: RLQueryScheduler = None  # RL agent for dynamic scheduling
-        self.load_history = deque(maxlen=100000)
-        self.locality_history = deque(maxlen=100000)
         self.init(N, num_data, random)
 
     def get_node_api(self, n):
@@ -116,6 +114,7 @@ class Cluster:
     def init(self, N, num_data, random):
         self.N = N
         self.num_nodes = N
+        self.cache_size = 8  # default cache size
         self.cost = {'num_queries': 0, 'cache_hit': 0, 'replica': 0}
         self.hash_rings = {}
         self.node_loads = defaultdict(int)
@@ -325,19 +324,6 @@ class Cluster:
         n = self.rl_agent.schedule_query(state, valid_actions)
         # print(n)
         result = self.query_node(n, key, op=op, qid=qid)
-
-        # Calculate locality score. 0 for cache miss and 1 for cache hit
-        locality_score = self.calculate_locality_score(result)
-
-        # Calculate load balance score
-        loads = [self.get_node_load(i) for i in range(self.num_nodes)]
-        max_load = max(loads) if loads and max(loads) > 0 else 1  # 避免除以0
-        normalized_loads = [load / max_load for load in loads]
-        load_variance = np.var(normalized_loads)
-
-        self.locality_history.append(locality_score)
-        self.load_history.append(load_variance)
-
         return result
 
     # SPORE
@@ -407,32 +393,26 @@ class Cluster:
         ]
         state.extend(query_data_distribution)
 
+        # nodes without query's data and is full
+        node_cache_full = [
+            1 if query_data_distribution[i] == 0
+            and len(node_info['cached_keys']) >= self.cache_size else 0
+            for i, node_info in enumerate(node_infos)
+        ]
+        state.extend(node_cache_full)
+
         # Node load information (normalized)
+        normalized_loads = self.get_nodes_load()
+        state.extend(normalized_loads)
+
+        return np.array(state, dtype=np.float32)
+
+    def get_nodes_load(self):
+        """Get normalized node loads"""
         loads = [self.get_node_load(i) for i in range(self.num_nodes)]
         max_load = max(loads) if loads and max(loads) > 0 else 1  # 避免除以0
         normalized_loads = [load / max_load for load in loads]
-        state.extend(normalized_loads)
-
-        # Use normalized loads to compute variance
-        load_variance = np.var(normalized_loads)
-        state.append(load_variance)
-
-        # # Data distribution information
-        # data_distribution = np.zeros(len(self.data_items))
-        # for i, data_item in enumerate(self.data_items):
-        #     nodes_with_data = sum(1 for node_info in node_infos
-        #                           if data_item in node_info['cached_keys'])
-        #     data_distribution[i] = nodes_with_data / self.num_nodes
-        # state.extend(data_distribution)
-
-        # Historical performance metrics
-        recent_locality = np.mean(list(
-            self.locality_history)[-10:]) if self.locality_history else 0
-        recent_load_balance = 1 - np.mean(list(
-            self.load_history)[-10:]) if self.load_history else 0
-        state.extend([recent_locality, recent_load_balance])
-
-        return np.array(state, dtype=np.float32)
+        return normalized_loads
 
     def calculate_locality_score(self, result: dict) -> float:
         """Calculate data locality score for assigning query to node"""
@@ -716,7 +696,7 @@ if __name__ == "__main__":
         cluster.rl_agent = scheduler
 
     print(
-        f"Executing workload with {args.N} nodes, {args.T} time steps, {args.H} schedule policy"
+        f"Executing workload with {args.N} nodes, {args.H} schedule policy"
     )
     profile = execute_workload(
         cluster,

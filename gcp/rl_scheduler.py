@@ -72,7 +72,7 @@ class RLQueryScheduler:
         action = self.act(state, valid_actions)
         return action
 
-    def load_checkpoint(self, filepath="checkpoint_q_network.pth"):
+    def load_checkpoint(self, filepath="rl_scheduler_checkpoint_v2.pth"):
         """Load model, memory and training state from file"""
         if not os.path.exists(filepath):
             print(f"❌ Checkpoint file {filepath} not found.")
@@ -82,7 +82,7 @@ class RLQueryScheduler:
         self.q_network.load_state_dict(checkpoint['q_network'])
         print(f"✅ Checkpoint loaded from {filepath}")
 
-    def save_checkpoint(self, filepath="checkpoint_q_network.pth"):
+    def save_checkpoint(self, filepath="rl_scheduler_checkpoint_v2.pth"):
         """Save model, memory and training state to file"""
         print(f"Saving checkpoint to {filepath}...")
         checkpoint = {'q_network': self.q_network.state_dict()}
