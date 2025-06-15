@@ -10,10 +10,12 @@ from math import ceil, sqrt
 from collections import defaultdict
 from pyheaven import TQDM, LoadJson
 from collections import defaultdict, deque
-from rl_scheduler import Query, RLQueryScheduler
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import urllib3
+from rl import Query, RLScheduler
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -41,7 +43,7 @@ class Cluster:
         self.alpha = hot_alpha
         self.debug = debug
         self.dyn_op = dyn_op
-        self.rl_agent: RLQueryScheduler = None  # RL agent for dynamic scheduling
+        self.rl_agent: RLScheduler = None  # RL agent for dynamic scheduling
         self.init(N, num_data, random)
 
     def get_node_api(self, n):
@@ -319,10 +321,8 @@ class Cluster:
         self.stats[key] += 1
         self.cost['num_queries'] += 1
         query = Query(qid, [key], op)
-        state = self.get_state(query)
-        valid_actions = self.get_valid_actions(query)
-        n = self.rl_agent.schedule_query(state, valid_actions)
-        # print(n)
+        n = self.rl_agent.schedule_query(query)
+        print(n)
         result = self.query_node(n, key, op=op, qid=qid)
         return result
 
@@ -358,70 +358,61 @@ class Cluster:
         else:
             return self.query_boundedhash(key, op=op, qid=qid)
 
-    def initialize_data_distribution(self):
-        """Initialize data distribution across nodes using consistent hashing"""
-        print("Initializing data distribution...")
-        for data_item in self.data_items:
-            # Use consistent hashing to determine initial placement
-            hash_value = int(hashlib.md5(data_item.encode()).hexdigest(), 16)
-            node_idx = hash_value % self.num_nodes
-            self.query_node(n=node_idx,
-                            data_id=data_item,
-                            op='mix',
-                            qid=f'init_cache')
-        print("Data distribution initialized.")
+    def warmup_cache(self):
+        """Initialize data distribution across nodes according to RL stable state"""
+        print("Initializing cache warmup (parallel)...")
+        simulation_cluster = self.rl_agent.cluster
 
-    def get_valid_actions(self, query: Query) -> List[int]:
-        """Get valid node assignments for a query"""
-        valid_actions = []
+        start_time = time.time()
 
-        for i in range(self.num_nodes):
-            valid_actions.append(i)
+        # 使用 ThreadPoolExecutor 并行处理节点
+        def warmup_single_node(node_idx):
+            """预热单个节点的缓存"""
+            node_cache = simulation_cluster.caches[node_idx]
+            cached_items = list(node_cache.keys())
 
-        return valid_actions
+            print(
+                f"[Thread-{threading.current_thread().ident}] Warming up node {node_idx} with {len(cached_items)} cached items: {cached_items}"
+            )
 
-    def get_state(self, query: Query) -> np.ndarray:
-        """Get current environment state for RL agent"""
-        state = []
+            # 按照缓存中的顺序来初始化当前环境的缓存
+            results = []
+            for data_item in cached_items:
+                result = self.query_node(n=node_idx,
+                                         data_id=data_item,
+                                         op='mix',
+                                         qid='init_cache')
+                results.append((data_item, result))
 
-        node_infos = [self.get_node_info(i) for i in range(self.num_nodes)]
+            print(
+                f"[Thread-{threading.current_thread().ident}] Node {node_idx} warmup completed with {len(results)} items"
+            )
+            return node_idx, results
 
-        # nodes with query's data
-        query_data_distribution = [
-            1 if query.data_items[0] in node_info['cached_keys'] else 0
-            for node_info in node_infos
-        ]
-        state.extend(query_data_distribution)
+        # 使用线程池并行处理所有节点
+        max_workers = simulation_cluster.num_nodes
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有节点的预热任务
+            future_to_node = {
+                executor.submit(warmup_single_node, node_idx): node_idx
+                for node_idx in range(simulation_cluster.num_nodes)
+            }
 
-        # nodes without query's data and is full
-        node_cache_full = [
-            1 if query_data_distribution[i] == 0
-            and len(node_info['cached_keys']) >= self.cache_size else 0
-            for i, node_info in enumerate(node_infos)
-        ]
-        state.extend(node_cache_full)
+            # 收集结果
+            completed_nodes = 0
+            for future in as_completed(future_to_node):
+                node_idx = future_to_node[future]
+                try:
+                    node_idx, results = future.result()
+                    completed_nodes += 1
+                    print(
+                        f"✓ Node {node_idx} warmup completed ({completed_nodes}/{simulation_cluster.num_nodes})"
+                    )
+                except Exception as exc:
+                    print(f"✗ Node {node_idx} warmup failed: {exc}")
 
-        # Node load information (normalized)
-        normalized_loads = self.get_nodes_load()
-        state.extend(normalized_loads)
-
-        return np.array(state, dtype=np.float32)
-
-    def get_nodes_load(self):
-        """Get normalized node loads"""
-        loads = [self.get_node_load(i) for i in range(self.num_nodes)]
-        max_load = max(loads) if loads and max(loads) > 0 else 1  # 避免除以0
-        normalized_loads = [load / max_load for load in loads]
-        return normalized_loads
-
-    def calculate_locality_score(self, result: dict) -> float:
-        """Calculate data locality score for assigning query to node"""
-        if result['cache_miss'] == 1:
-            locality_score = 0.0
-        else:
-            locality_score = 1.0
-
-        return locality_score
+        end_time = time.time()
+        print(f"Cache warmup completed in {end_time - start_time:.2f} seconds")
 
     def total_size(self, obj, seen=None):
         if seen is None:
@@ -688,16 +679,11 @@ if __name__ == "__main__":
             1)
 
     if args.H == 'rl':
-        cluster.initialize_data_distribution()
-        scheduler = RLQueryScheduler(
-            len(cluster.get_state(Query('', [''], 'mix'))), cluster.num_nodes)
-        scheduler.load_checkpoint()
-        # scheduler.save_checkpoint()
+        scheduler = RLScheduler()
         cluster.rl_agent = scheduler
+        cluster.warmup_cache()
 
-    print(
-        f"Executing workload with {args.N} nodes, {args.H} schedule policy"
-    )
+    print(f"Executing workload with {args.N} nodes, {args.H} schedule policy")
     profile = execute_workload(
         cluster,
         workload,

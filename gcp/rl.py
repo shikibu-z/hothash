@@ -4,12 +4,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 import random
 import hashlib
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from exp import generate_workload
 import matplotlib.pyplot as plt
 import hashlib
 from typing import Optional
@@ -20,6 +19,8 @@ from collections import Counter
 from pyheaven import HeavenArguments, IntArgumentDescriptor, FloatArgumentDescriptor, LiteralArgumentDescriptor, SwitchArgumentDescriptor, BoolArgumentDescriptor, PrintJson
 from collections import deque, defaultdict
 import random
+import pickle
+import json
 
 
 def Hash(key, salt=None):
@@ -47,14 +48,40 @@ class Query:
     priority: int = 1
 
 
-class Cluster:
+class RLScheduler:
+
+    def __init__(self):
+        # Load the cluster state
+        self.cluster = SimulationCluster()
+        self.cluster.load_state('cluster_state.json', format='json')
+
+        # Initialize environment
+        self.env = ClusterEnvironment(cluster=self.cluster)
+
+        # Load the trained RL scheduler
+        self.scheduler = RLQueryScheduler(self.env)
+        self.scheduler.load_checkpoint("rl_scheduler_checkpoint_v2.pth")
+
+    def schedule_query(self, query: Query) -> int:
+        """Schedule a query using the trained RL scheduler"""
+        state = self.env.get_state(query)
+        valid_actions = self.env.get_valid_actions(query)
+        action = self.scheduler.act(state, valid_actions)
+        # self.cluster.query_node(n=action,
+        #                         data_id=query.data_items[0],
+        #                         op=query.op,
+        #                         qid=query.id)
+        return action
+
+
+class SimulationCluster:
 
     def __init__(self, num_nodes=20, cache_size=8, num_data=15):
         self.num_nodes = num_nodes
         self.cache_size = cache_size
 
-        # 每个节点的 cache，用 deque 实现 FIFO
-        self.caches = [deque(maxlen=cache_size) for _ in range(num_nodes)]
+        # Using OrderedDict for more efficient LRU implementation
+        self.caches = [OrderedDict() for _ in range(num_nodes)]
 
         # 每个节点累计 query 次数
         self.node_query_count = [0 for _ in range(num_nodes)]
@@ -85,14 +112,15 @@ class Cluster:
         cache_replacement = 0
 
         if data_id in cache:
-            # Cache hit: move to end to simulate FIFO freshness
-            cache.remove(data_id)
-            cache.append(data_id)
+            # Cache hit: move to end (most recently used)
+            cache.move_to_end(data_id)
         else:
             cache_miss = 1
             if len(cache) >= self.cache_size:
                 cache_replacement = 1
-            cache.append(data_id)
+                # Remove least recently used item (first item)
+                cache.popitem(last=False)
+            cache[data_id] = True  # Add new item
 
         return {
             'cache_miss': cache_miss,
@@ -112,7 +140,7 @@ class Cluster:
     def get_node_info(self, i):
         if 0 <= i < self.num_nodes:
             cache = self.caches[i]
-            return {"cached_keys": {key: True for key in cache}}
+            return {"cached_keys": {key: True for key in cache.keys()}}
         else:
             raise IndexError(
                 f"Node index {i} out of range (0-{self.num_nodes - 1})")
@@ -121,10 +149,84 @@ class Cluster:
         """
         Reset the cluster to initial state.
         """
-        self.caches = [
-            deque(maxlen=self.cache_size) for _ in range(self.num_nodes)
-        ]
+        self.caches = [OrderedDict() for _ in range(self.num_nodes)]
         self.node_query_count = [0 for _ in range(self.num_nodes)]
+
+    def save_state(self, filepath='cluster_state.json', format='json'):
+        """
+        Save cluster state to file.
+        
+        Args:
+            filepath: path to save the state file
+            format: 'pickle' or 'json' (default: 'json')
+        """
+        state_data = {
+            'num_nodes': self.num_nodes,
+            'cache_size': self.cache_size,
+            'caches':
+            [list(cache.keys())
+             for cache in self.caches],  # Convert OrderedDict to list
+            'node_query_count': self.node_query_count.copy(),
+            'data_items': self.data_items.copy(),
+            'node_ids': self.node_ids.copy()
+        }
+
+        try:
+            if format.lower() == 'pickle':
+                with open(filepath, 'wb') as f:
+                    pickle.dump(state_data, f)
+            elif format.lower() == 'json':
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(state_data, f, indent=2, ensure_ascii=False)
+            else:
+                raise ValueError("Format must be 'pickle' or 'json'")
+            print(f"Cluster state saved to {filepath}")
+        except Exception as e:
+            print(f"Error saving cluster state: {e}")
+            raise
+
+    def load_state(self, filepath='cluster_state.json', format='json'):
+        """
+        Load cluster state from file.
+        
+        Args:
+            filepath: path to the state file
+            format: 'pickle' or 'json' (default: 'json')
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"State file not found: {filepath}")
+
+        try:
+            if format.lower() == 'pickle':
+                with open(filepath, 'rb') as f:
+                    state_data = pickle.load(f)
+            elif format.lower() == 'json':
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    state_data = json.load(f)
+            else:
+                raise ValueError("Format must be 'pickle' or 'json'")
+
+            # Restore cluster configuration
+            self.num_nodes = state_data['num_nodes']
+            self.cache_size = state_data['cache_size']
+            self.data_items = state_data['data_items']
+            self.node_ids = state_data['node_ids']
+
+            # Restore caches (convert list back to OrderedDict)
+            self.caches = []
+            for cache_keys in state_data['caches']:
+                cache = OrderedDict()
+                for key in cache_keys:
+                    cache[key] = True
+                self.caches.append(cache)
+
+            # Restore query counts
+            self.node_query_count = state_data['node_query_count']
+
+            print(f"Cluster state loaded from {filepath}")
+        except Exception as e:
+            print(f"Error loading cluster state: {e}")
+            raise
 
 
 class ClusterEnvironment:
@@ -132,7 +234,7 @@ class ClusterEnvironment:
 
     def __init__(
         self,
-        cluster: Cluster = None,
+        cluster: SimulationCluster = None,
         cache_size: int = 8,
         locality_weight: float = 0.5,
         balance_weight: float = 0.5,
@@ -145,7 +247,7 @@ class ClusterEnvironment:
         self.cache_size = cache_size
 
         # Initialize data distribution using consistent hashing
-        self._initialize_data_distribution()
+        # self._initialize_data_distribution()
 
         # Performance tracking
         self.query_history = deque(maxlen=10000000)
@@ -173,6 +275,31 @@ class ClusterEnvironment:
                                     op='mix',
                                     qid=f'init_cache')
         print("Data distribution initialized.")
+
+    def get_stable_state(self, node_infos, normalized_loads,
+                         query: Query) -> np.ndarray:
+        """Get stable state representation for RL agent"""
+        state = []
+
+        # nodes with query's data
+        query_data_distribution = [
+            1 if query.data_items[0] in node_info['cached_keys'] else 0
+            for node_info in node_infos
+        ]
+        state.extend(query_data_distribution)
+
+        # nodes without query's data and is full
+        node_cache_full = [
+            1 if query_data_distribution[i] == 0
+            and len(node_info['cached_keys']) >= self.cache_size else 0
+            for i, node_info in enumerate(node_infos)
+        ]
+        state.extend(node_cache_full)
+
+        # Node load information (normalized)
+        state.extend(normalized_loads)
+
+        return np.array(state, dtype=np.float32)
 
     def get_state(self, query: Query) -> np.ndarray:
         """Get current environment state for RL agent"""
@@ -237,8 +364,7 @@ class ClusterEnvironment:
 
         return cache_replacement
 
-    def step(self, query: Query,
-             action: int) -> Tuple[float, float, float, bool]:
+    def step(self, query: Query, action: int) -> Tuple[float, bool]:
         """Execute query assignment and return reward"""
         # Get node loads before executing the action
         normalized_loads = self.get_nodes_load()
@@ -358,8 +484,8 @@ class RLQueryScheduler:
 
     def act(self, state, valid_actions):
         """Choose action using epsilon-greedy policy"""
-        if np.random.random() <= self.epsilon:
-            return random.choice(valid_actions)
+        # if np.random.random() <= self.epsilon:
+        #     return random.choice(valid_actions)
 
         state_tensor = torch.FloatTensor(state).unsqueeze(0)
         q_values = self.q_network(state_tensor)
@@ -542,7 +668,7 @@ class QueryGenerator:
 
 def train_scheduler(episodes: int = 1000,
                     num_queries_per_episode: int = 50,
-                    cluster: Cluster = None):
+                    cluster: SimulationCluster = None):
     """Train the RL scheduler"""
     # Initialize environment and components
     env = ClusterEnvironment(cluster=cluster)
@@ -631,7 +757,7 @@ def train_scheduler(episodes: int = 1000,
             print(f"  Epsilon: {scheduler.epsilon:.4f}")
 
             # Check for convergence criteria
-            if episode > 600 and avg_locality > 0.999 and avg_cache_replacement < 0.001:
+            if episode > 300 and avg_locality > 0.999 and avg_cache_replacement < 0.001:
                 return scheduler, env, {
                     'rewards': episode_rewards,
                     'locality': locality_scores,
@@ -648,6 +774,104 @@ def train_scheduler(episodes: int = 1000,
         'load_variance': global_load_imbalance,
         'cache_replacement': cache_replacement,
         'action_history': list(env.action_history)
+    }
+
+
+def test_scheduler(scheduler: RLQueryScheduler,
+                   environment: ClusterEnvironment):
+    """Test the trained RL scheduler with comprehensive statistics"""
+    query_generator = QueryGenerator()
+
+    queries_processed = 0
+
+    # Statistics tracking
+    locality_scores = []
+    actions = []
+    replacements = []
+    global_load_stds = []  # 添加全局负载标准差跟踪
+
+    node_infos = [
+        environment.cluster.get_node_info(i)
+        for i in range(environment.num_nodes)
+    ]
+    normalized_loads_init = environment.get_nodes_load()
+
+    # 初始化节点负载计数器
+    node_loads = [0] * environment.num_nodes
+
+    for i in range(20000):
+        query = query_generator.generate_query()
+
+        # Get current state
+        state = environment.get_stable_state(node_infos, normalized_loads_init,
+                                             query)
+        valid_actions = environment.get_valid_actions(query)
+
+        # Choose action
+        action = scheduler.act(state, valid_actions)
+        actions.append(action)
+
+        # 更新对应节点的负载
+        node_loads[action] += 1
+
+        # Execute action
+        result = environment.cluster.query_node(n=action,
+                                                data_id=query.data_items[0],
+                                                op=query.op,
+                                                qid=query.id)
+
+        # Calculate locality score. 0 for cache miss and 1 for cache hit
+        locality_score = environment.calculate_locality_score(result)
+        locality_scores.append(locality_score)
+
+        # cache replacement
+        replacement = environment.get_cache_replacement(result)
+        replacements.append(replacement)
+
+        # 计算当前的全局负载标准差（归一化）
+        if queries_processed > 0:
+            normalized_node_loads = [
+                load / queries_processed for load in node_loads
+            ]
+            current_global_load_std = np.std(normalized_node_loads)
+            global_load_stds.append(current_global_load_std)
+
+        queries_processed += 1
+
+    # 最终的全局负载标准差（归一化）
+    normalized_node_loads = [load / queries_processed for load in node_loads]
+    final_global_load_std = np.std(normalized_node_loads)
+
+    # Calculate and print statistics
+    print("=== Scheduler Performance Statistics ===")
+    print(f"Total queries processed: {queries_processed}")
+
+    print("\n=== Locality Score Statistics ===")
+    print(f"Cache hit rate: {np.mean(locality_scores):.4f}")
+
+    print("\n=== Global Load Standard Deviation Statistics ===")
+    print(f"Final global load std: {final_global_load_std:.4f}")
+    print(
+        f"Mean global load std during execution: {np.mean(global_load_stds):.4f}"
+    )
+
+    print("\n=== Node Load Distribution ===")
+    for node_id, load in enumerate(node_loads):
+        print(
+            f"Node {node_id}: {load} queries ({load/queries_processed*100:.2f}%)"
+        )
+
+    print("\n=== Cache Replacement Statistics ===")
+    print(f"Mean replacement count: {np.mean(replacements):.4f}")
+    print(f"Total replacements: {np.sum(replacements)}")
+
+    return {
+        'locality_scores': locality_scores,
+        'actions': actions,
+        'replacements': replacements,
+        'global_load_stds': global_load_stds,
+        'final_global_load_std': final_global_load_std,
+        'node_loads': node_loads
     }
 
 
@@ -728,13 +952,33 @@ def plot_action_history(action_history):
     plt.show()
 
 
+def test_trained_rl():
+    """Test the trained RL scheduler"""
+    # Load the cluster state
+    cluster = SimulationCluster()
+    cluster.load_state('cluster_state.json', format='json')
+
+    # Initialize environment
+    env = ClusterEnvironment(cluster=cluster)
+
+    # Load the trained RL scheduler
+    scheduler = RLQueryScheduler(env)
+    scheduler.load_checkpoint("rl_scheduler_checkpoint_v2.pth")
+
+    # Test the scheduler
+    test_scheduler(scheduler, env)
+
+
 if __name__ == "__main__":
+    # test_trained_rl()
+    # exit(0)
+
     args = HeavenArguments.from_parser(descriptors=[
         IntArgumentDescriptor('N', default=20, help='Number of nodes'),
         IntArgumentDescriptor(
             'T', default=1000, help='Number of query time steps'),
         IntArgumentDescriptor(
-            'q', default=128, help='Average number of queries per time step'),
+            'q', default=256, help='Average number of queries per time step'),
         IntArgumentDescriptor('D', default=15, help='Number of data items'),
         LiteralArgumentDescriptor('M',
                                   default='ycsb',
@@ -763,7 +1007,7 @@ if __name__ == "__main__":
     ])
 
     print('Initializing cluster and workload...')
-    cluster = Cluster()
+    cluster = SimulationCluster()
     cluster.reset()
 
     # Train the scheduler
@@ -772,7 +1016,14 @@ if __name__ == "__main__":
     scheduler, env, training_metrics = train_scheduler(
         episodes=args.T, num_queries_per_episode=args.q, cluster=cluster)
 
+    print("Training completed. Saving cluster state...")
+    cluster.save_state('cluster_state.json', format='json')
+
+    print("Saving RL scheduler checkpoint...")
     scheduler.save_checkpoint("rl_scheduler_checkpoint_v2.pth")
+
+    print("Training completed. Testing the scheduler...")
+    test_scheduler(scheduler, env)
 
     # Plot training progress
     try:

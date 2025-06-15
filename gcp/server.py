@@ -100,6 +100,11 @@ def query():
                     CACHE[data_id] = data
                     CACHE.move_to_end(data_id)
             fetch_time = time.time()
+
+            if op == 'init_cache':
+                result = {}
+                break
+
             result = int(compute(op, data))
             break
         except Exception as e:
