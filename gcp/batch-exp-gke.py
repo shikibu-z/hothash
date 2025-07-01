@@ -11,7 +11,9 @@ def run_exp(identifier, args):
     command = f"python3 exp.py {args} > profile_{identifier}.json"
     gcloud_command = f"source config.bash && gcloud compute ssh hothash-gke --zone asia-east2-a --command '{command}'"
     CMD(gcloud_command)
-    CMD(f"gcloud compute scp hothash-gke:~/profile_{identifier}.json ../result/gcp/profile_{identifier}.json")
+    CMD(
+        f"gcloud compute scp hothash-gke:~/profile_{identifier}.json ../result/gcp/profile_{identifier}.json"
+    )
     print("=====================================")
 
 

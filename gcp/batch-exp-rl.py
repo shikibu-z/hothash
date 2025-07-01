@@ -4,17 +4,24 @@ from pyheaven import *
 
 
 def run_exp(identifier, args):
-    if ExistFile(f"../result/gcp/profile_{identifier}.json"):
+    if ExistFile(
+        f"/Users/shikibu/Documents/phd/project/balance/result/gcp/profile_{identifier}.json"
+    ):
         print(f"Skipping experiment '{identifier}'")
         return
 
     print("=====================================")
     print(f"Running experiment '{identifier}' with args '{args}'")
-    command = f"python3 fix_exp.py {args} > profile_{identifier}.json"
+    print("Training the RL scheduler...")
+    command = f"python3 rl_train.py {args} -T 480"
+    gcloud_command = f"source config.bash && gcloud compute ssh hothash-node-21 --zone asia-east2-a --command '{command}'"
+    CMD(gcloud_command)
+    print("Training completed. Running the experiment...")
+    command = f"python3 exp.py {args} > profile_{identifier}.json"
     gcloud_command = f"source config.bash && gcloud compute ssh hothash-node-21 --zone asia-east2-a --command '{command}'"
     CMD(gcloud_command)
     CMD(
-        f"gcloud compute scp hothash-node-21:~/profile_{identifier}.json ../result/gcp/profile_{identifier}.json"
+        f"gcloud compute scp hothash-node-21:~/profile_{identifier}.json /Users/shikibu/Documents/phd/project/balance/result/gcp/profile_{identifier}.json"
     )
     print("=====================================")
 
@@ -28,7 +35,8 @@ EMPTY = [
 ]
 
 ALG_ARGS = {
-    "hot": "-H hot",
+    "rl": "-H rl",
+    # "hot": "-H hot",
     # "cons": "-H cons",
     # "balanced": "-H balanced",
     # "bounded": "-H bounded",
@@ -42,13 +50,13 @@ SKEWNESS_ARGS = {
     "Y20": "-M ycsb -k 1.2",
     "Y10": "-M ycsb -k 1.1",
     "Y01": "-M ycsb -k 1.01",
-    "Y00": "-M uniform",
-    "S50": "-M  ssb -k 1.5",
-    "S40": "-M  ssb -k 1.4",
-    "S30": "-M  ssb -k 1.3",
-    "S20": "-M  ssb -k 1.2",
-    "S10": "-M  ssb -k 1.1",
-    "S01": "-M  ssb -k 1.01",
+    # "Y00": "-M uniform",
+    # "S50": "-M  ssb -k 1.5",
+    # "S40": "-M  ssb -k 1.4",
+    # "S30": "-M  ssb -k 1.3",
+    # "S20": "-M  ssb -k 1.2",
+    # "S10": "-M  ssb -k 1.1",
+    # "S01": "-M  ssb -k 1.01",
 }
 
 DATASET_SIZE_ARGS = {
@@ -59,8 +67,8 @@ DATASET_SIZE_ARGS = {
     "TD8000": "-D 8000",
     "TD7500": "-D 7500",
     "TD7000": "-D 7000",
-    "TD6500": "-D 6500",
-    "TD6000": "-D 6000",
+    # "TD6500": "-D 6500",
+    # "TD6000": "-D 6000",
     # "SD300": "-D 300",
     # "SD350": "-D 350",
     # "SD400": "-D 400",
@@ -246,17 +254,9 @@ def stop_server(host):
 
 
 if __name__ == "__main__":
-    # for n_args, f_args in HOTNESS_CHANGE_ARGS.items():
-    #     for alg, alg_args in ALG_ARGS.items():
-    #         run_exp(f"{n_args}_{alg}", f"{f_args} {alg_args}")
-
-    for n_args, f_args in FIX_WINDOW_ARGS.items():
+    for n_args, f_args in SKEWNESS_ARGS.items():
         for alg, alg_args in ALG_ARGS.items():
             run_exp(f"{n_args}_{alg}", f"{f_args} {alg_args}")
-
-    # for n_args, f_args in WINDOW_SIZE_ARGS.items():
-    #     for alg, alg_args in ALG_ARGS.items():
-    #         run_exp(f"{n_args}_{alg}", f"{f_args} {alg_args}")
 
     threads = []
     for host in hosts:
