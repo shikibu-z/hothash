@@ -46,4 +46,4 @@ The size and number of data blocks could be set by adjusting parameters in the c
 4. Hardware-related configurations (i.e. CPU capacity, network bandwidth) could be adjust in `controller.py` and `entities.py`.
 
 ## Theoretical Analysis
-We include the full theoretical analysis and proof as appendix in the `HotHashVLDB25.pdf`.
+We include the full theoretical analysis and proof as appendix in the `HotHash Technical Report.pdf`.
